@@ -4,17 +4,13 @@
 # Triggered by 'repository_dispatch' from the main litefin repository on every
 # commit to the 'development' branch (ignoring chore: commits).
 #
-# Packages Compiled & Released:
-# - TV Packages:
-#     - Samsung Tizen (.wgt)
-#     - LG webOS (.ipk)
-#     - Jellyfin Server Companion Plugin (.zip)
-# - Desktop Packages:
-#     - Windows: Portable .exe, Setup Installer (.exe), and .msi
-#     - Linux:   Portable AppImage, Debian package (.deb), and .rpm
-#     - macOS:   Apple Disk Image (.dmg)
-# - Mobile Packages:
-#     - Android: Split ABI APKs (arm64, arm, x86, x86_64) & Universal APK (.apk)
+# Packages Compiled & Released in Real-Time:
+# - TV Packages & Jellyfin Plugin (Tizen .wgt, webOS .ipk, Web Client Plugin .zip)
+# - Desktop Packages (Windows .exe/.msi, Linux .deb/.AppImage/.rpm, macOS .dmg)
+# - Mobile Packages (Android split ABIs & Universal .apk/.aab)
+#
+# Each platform attaches its compiled binaries to the GitHub Release immediately
+# upon completion so files appear live without waiting for other jobs to finish.
 # ==============================================================================
 
 name: Build Litefin Dev Release
@@ -38,10 +34,10 @@ permissions:
 
 jobs:
   # ============================================================================
-  # Job 1: Initialize GitHub Pre-Release Tag
+  # Job 1: Initialize Release Shell (Marked as Latest)
   # ============================================================================
   create-release:
-    name: Initialize Dev Release Tag
+    name: Initialize Dev Release
     runs-on: ubuntu-latest
     outputs:
       tag_name: ${{ steps.init.outputs.tag_name }}
@@ -49,44 +45,57 @@ jobs:
       commit_sha: ${{ steps.init.outputs.commit_sha }}
 
     steps:
-      - name: Compute Target Metadata
+      - name: Checkout Build Repo
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release Record
         id: init
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TARGET_SHA="${{ github.event.client_payload.sha || inputs.target_sha || 'development' }}"
           SHORT_SHA="${{ github.event.client_payload.short_sha || inputs.short_sha || 'dev' }}"
           RUN_NUM="${{ github.run_number }}"
           TAG_NAME="dev-b${RUN_NUM}-${SHORT_SHA}"
+          TITLE="Litefin Dev Build #${RUN_NUM} (${SHORT_SHA})"
+          MSG="${{ github.event.client_payload.message || 'Manual build run' }}"
+          AUTHOR="${{ github.event.client_payload.author || github.actor }}"
+          REF="${{ github.event.client_payload.ref || 'development' }}"
 
           echo "commit_sha=${TARGET_SHA}" >> $GITHUB_OUTPUT
           echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release Record
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.init.outputs.tag_name }}
-          name: "Litefin Dev Build #${{ github.run_number }} (${{ steps.init.outputs.short_sha }})"
-          prerelease: true
-          make_latest: false
-          body: |
-            ## Automated Litefin Development Build
+          BODY=$(cat <<EOF
+          ## Automated Litefin Development Build
 
-            - **Source Commit:** [`${{ steps.init.outputs.short_sha }}`](https://github.com/MoazSalem/litefin/commit/${{ steps.init.outputs.commit_sha }})
-            - **Commit Message:** ${{ github.event.client_payload.message || 'Manual build run' }}
-            - **Pushed by:** @${{ github.event.client_payload.author || github.actor }}
-            - **Target Branch:** `${{ github.event.client_payload.ref || 'development' }}`
-            - **Build Pipeline Run:** #${{ github.run_number }}
+          - **Source Commit:** [\`${SHORT_SHA}\`](https://github.com/MoazSalem/litefin/commit/${TARGET_SHA})
+          - **Commit Message:** ${MSG}
+          - **Pushed by:** @${AUTHOR}
+          - **Target Branch:** \`${REF}\`
+          - **Build Pipeline Run:** #${RUN_NUM}
 
-            ---
-            *Note: Artifacts are compiled and attached below as each platform job completes.*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ---
+          *Artifacts are compiled and attached below automatically as each platform finishes.*
+          EOF
+          )
+
+          # Delete existing tag/release if it was partially left from a retry
+          gh release delete "$TAG_NAME" --yes 2>/dev/null || true
+          git tag -d "$TAG_NAME" 2>/dev/null || true
+
+          # Initialize the Release and mark it as Latest
+          gh release create "$TAG_NAME" \
+            --title "$TITLE" \
+            --notes "$BODY" \
+            --latest \
+            --target main
 
   # ============================================================================
-  # Job 2: Build TV Packages (Samsung Tizen, LG webOS, Jellyfin Plugin)
+  # Job 2: Build TV Packages & Jellyfin Web Client Plugin
   # ============================================================================
   build-tv:
-    name: TV Packages (Tizen & webOS)
+    name: TV Packages & Web Client Plugin
     needs: [ create-release ]
     runs-on: ubuntu-latest
 
@@ -105,7 +114,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Setup .NET SDK (For Jellyfin Plugin)
+      - name: Setup .NET SDK (Required for Jellyfin Plugin)
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -119,29 +128,31 @@ jobs:
       - name: Build Tizen & webOS Packages
         run: npm run package
 
-      - name: Build Litefin Server Plugin
-        run: npm run package:plugin || true
+      - name: Build Litefin Web Client Server Plugin
+        run: npm run package:plugin
+        env:
+          TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
 
-      - name: Brand Artifacts with Short SHA
+      - name: Brand TV Packages with Short SHA
         run: |
           SHORT="${{ needs.create-release.outputs.short_sha }}"
-          # Append short SHA before file extension
-          for f in *.wgt *.ipk Litefin.*.Plugin*.zip manifest.json litefin-plugin-manifest.json; do
+          for f in *.wgt *.ipk; do
             [ -f "$f" ] || continue
             filename="${f%.*}"
             ext="${f##*.}"
             mv "$f" "${filename}-${SHORT}.${ext}"
           done
 
-      - name: Attach TV Artifacts to Release
+      - name: Upload TV & Plugin Artifacts Directly to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create-release.outputs.tag_name }}
           files: |
             *.wgt
             *.ipk
-            *.zip
-            *.json
+            manifest.json
+            Litefin.*.Plugin*.zip
+            litefin-plugin-manifest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -161,7 +172,7 @@ jobs:
           - name: Windows
             os: windows-latest
             script: npm run package:windows
-            glob: |
+            artifacts: |
               Litefin-*.exe
               Litefin_*_setup*.exe
               Litefin_*.msi
@@ -169,7 +180,7 @@ jobs:
           - name: Linux
             os: ubuntu-latest
             script: npm run package:linux
-            glob: |
+            artifacts: |
               *.deb
               *.AppImage
               *.rpm
@@ -177,7 +188,7 @@ jobs:
           - name: macOS
             os: macos-latest
             script: npm run package:macos
-            glob: |
+            artifacts: |
               *.dmg
 
     steps:
@@ -203,6 +214,23 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Configure Linux APT Environment
+        if: runner.os == 'Linux'
+        run: |
+          # Force IPv4 to prevent Azure IPv6 mirror connection timeouts
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+          # Preserve downloaded .debs in /var/cache/apt/archives for caching
+          echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/01keep-debs
+          echo 'APT::Keep-Downloaded-Packages "true";' | sudo tee -a /etc/apt/apt.conf.d/01keep-debs
+          sudo chown -R runner:runner /var/cache/apt/archives
+
+      - name: Cache APT Package Archives
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-tauri-linux-deps-v1
+
       - name: Install Linux Dependencies
         if: runner.os == 'Linux'
         run: |
@@ -221,6 +249,8 @@ jobs:
             gstreamer1.0-plugins-bad \
             gstreamer1.0-tools
           sudo apt-get install -y libayatana-appindicator3-dev || sudo apt-get install -y libappindicator3-dev
+          sudo chown -R runner:runner /var/cache/apt/archives || true
+          sudo chmod -R 777 /var/cache/apt/archives || true
 
       - name: Install Project Dependencies
         run: npm install
@@ -251,17 +281,11 @@ jobs:
             Rename-Item -Path $_.FullName -NewName $newName
           }
 
-      - name: Attach Desktop Binaries to Release
+      - name: Upload Desktop Artifacts Directly to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create-release.outputs.tag_name }}
-          files: |
-            *.exe
-            *.msi
-            *.deb
-            *.AppImage
-            *.rpm
-            *.dmg
+          files: ${{ matrix.platform.artifacts }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -340,7 +364,7 @@ jobs:
             mv "$f" "${filename}-${SHORT}.${ext}"
           done
 
-      - name: Attach Android APKs to Release
+      - name: Upload Android APKs Directly to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create-release.outputs.tag_name }}
