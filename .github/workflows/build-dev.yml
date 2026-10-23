@@ -350,6 +350,41 @@ jobs:
       - name: Install Project Dependencies
         run: npm install
 
+      # ------------------------------------------------------------------------
+      # Configure Android Signing Keystore (Official Key or Auto-Generated Dev Key)
+      # ------------------------------------------------------------------------
+      - name: Configure Android Signing Keystore
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "Configuring official release signing keystore from secrets..."
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > src-tauri/gen/android/New_Keystore.jks
+            cat <<EOF > src-tauri/gen/android/keystore.properties
+            storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}
+            keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+            keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+            storeFile=New_Keystore.jks
+            EOF
+          else
+            echo "No keystore secrets configured in build repo. Generating automatic development keystore..."
+            keytool -genkey -v \
+              -keystore src-tauri/gen/android/New_Keystore.jks \
+              -alias androiddebugkey \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=LitefinDev,O=Litefin,C=US"
+
+            cat <<EOF > src-tauri/gen/android/keystore.properties
+            storePassword=android
+            keyPassword=android
+            keyAlias=androiddebugkey
+            storeFile=New_Keystore.jks
+            EOF
+          fi
+          echo "Android signing configuration generated successfully."
+
       - name: Compile Android ABI-Split APKs
         run: npm run package:android
 
