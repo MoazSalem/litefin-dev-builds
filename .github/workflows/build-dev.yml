@@ -179,8 +179,10 @@ jobs:
               Litefin_*_setup*.exe
               Litefin_*.msi
 
+          # Pinned strictly to Ubuntu 22.04 LTS runner to maintain GLIBC 2.35 compatibility
+          # across all downstream Linux distributions and AppImage validation systems.
           - name: Linux
-            os: ubuntu-latest
+            os: ubuntu-22.04
             script: npm run package:linux
             artifacts: |
               *.deb
@@ -237,6 +239,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # Resolve runner image package conflict: GitHub Actions ubuntu-22.04
+          # pre-installs versioned LLVM unwind packages (e.g. libunwind-14) which
+          # clash with the generic libunwind-dev package required by libgstreamer1.0-dev.
+          sudo apt-get remove -y "libunwind-*" || true
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             librsvg2-dev \
@@ -244,6 +250,7 @@ jobs:
             libssl-dev \
             build-essential \
             curl \
+            libunwind-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base \
